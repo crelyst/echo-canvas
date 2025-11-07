@@ -1,4 +1,4 @@
-// script.js — EchoCanvas core functionality
+// script.js — EchoCanvas core functionality with persistence (localStorage)
 (() => {
   const canvas = document.getElementById('echoCanvas');
   const ctx = canvas.getContext('2d');
@@ -22,7 +22,8 @@
 
   // state
   let echoes = [];
-  const presets = {}; // placeholder for saved presets
+  const LS_KEY = 'echoCanvas.presets';
+  let presets = loadPresetsFromStorage();
 
   // responsive canvas
   function resize() {
@@ -44,7 +45,6 @@
 
   // create a tone for an echo
   function playTone(freq, dur=0.6) {
-    // resume context on first interaction (some browsers require user gesture)
     if (audioCtx.state === 'suspended') audioCtx.resume();
 
     const o = audioCtx.createOscillator();
@@ -66,7 +66,6 @@
   // spawn echo at x,y
   function spawnEcho(x,y,opts={}) {
     const base = parseFloat(pitchRange.value) || 440;
-    const panFactor = (x / canvas.clientWidth) * 2 - 1; // -1..1
     const freq = base * (1 + (y / canvas.clientHeight - 0.5) * 0.8);
     const hue = opts.hue ?? Math.floor(rand(0,360));
     const maxR = opts.radius ?? rand(40,220);
@@ -80,7 +79,7 @@
   // drawing loop
   function draw(now) {
     const t = performance.now();
-    // background fade
+    // subtle background wash
     ctx.fillStyle = 'rgba(6,10,18,0.15)';
     ctx.fillRect(0,0,canvas.width,canvas.height);
 
@@ -123,7 +122,6 @@
   });
 
   randomBtn.addEventListener('click', () => {
-    // spawn a gradient of random echoes
     for (let i=0;i<8;i++){
       const x = rand(20, canvas.clientWidth-20);
       const y = rand(20, canvas.clientHeight-20);
@@ -146,9 +144,106 @@
     if (el) el.textContent = `${parseFloat(decayRange.value).toFixed(2)}s`;
   });
 
-  // preset saving / loading will be added later (persistence commit)
+  // persistence helpers
+  function loadPresetsFromStorage() {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch(e) {
+      console.warn('Failed to read presets', e);
+      return {};
+    }
+  }
+  function savePresetsToStorage() {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify(presets));
+    } catch(e) {
+      console.warn('Failed to save presets', e);
+    }
+  }
+
+  // create and apply preset
+  function makeCurrentPreset() {
+    return {
+      name: presetNameInput.value || `Preset ${Object.keys(presets).length+1}`,
+      pitch: parseFloat(pitchRange.value),
+      volume: parseFloat(volumeRange.value),
+      decay: parseFloat(decayRange.value)
+    };
+  }
+  function applyPreset(p) {
+    pitchRange.value = p.pitch;
+    volumeRange.value = p.volume;
+    decayRange.value = p.decay;
+    // update UI labels
+    pitchRange.dispatchEvent(new Event('input'));
+    volumeRange.dispatchEvent(new Event('input'));
+    decayRange.dispatchEvent(new Event('input'));
+    // create a little visual hint: spawn a warm echo in center with hue derived from name hash
+    const h = Array.from(p.name).reduce((s,c)=>s + c.charCodeAt(0), 0) % 360;
+    spawnEcho(canvas.clientWidth/2, canvas.clientHeight/2, {hue: h, radius: 120, life: Math.max(0.6, p.decay)});
+  }
+
+  savePresetBtn.addEventListener('click', () => {
+    const preset = makeCurrentPreset();
+    presets[preset.name] = preset;
+    savePresetsToStorage();
+    renderPresets();
+    presetNameInput.value = '';
+  });
+
+  function deletePreset(name) {
+    delete presets[name];
+    savePresetsToStorage();
+    renderPresets();
+  }
+
   function renderPresets() {
-    presetsList.innerHTML = '<div class="muted">No presets yet</div>';
+    presetsList.innerHTML = '';
+    const keys = Object.keys(presets);
+    if (!keys.length) {
+      presetsList.innerHTML = '<div class="muted">No presets yet</div>';
+      return;
+    }
+    keys.forEach(name => {
+      const p = presets[name];
+      const item = document.createElement('div');
+      item.className = 'preset-item';
+      const left = document.createElement('div');
+      left.style.display = 'flex';
+      left.style.alignItems = 'center';
+      left.style.gap = '8px';
+      const sw = document.createElement('div');
+      sw.className = 'color-sample';
+      // small color hint from name
+      sw.style.background = hsvToRgb(Array.from(name).reduce((s,c)=>s+c.charCodeAt(0),0)%360,0.7,0.9);
+      const title = document.createElement('div');
+      title.style.fontSize = '13px';
+      title.textContent = name;
+      left.appendChild(sw);
+      left.appendChild(title);
+
+      const right = document.createElement('div');
+      right.style.display = 'flex';
+      right.style.gap = '6px';
+      const applyBtn = document.createElement('button');
+      applyBtn.className = 'small';
+      applyBtn.textContent = 'Apply';
+      applyBtn.addEventListener('click', ()=> applyPreset(p));
+      const delBtn = document.createElement('button');
+      delBtn.className = 'small ghost';
+      delBtn.textContent = 'Del';
+      delBtn.addEventListener('click', ()=> {
+        if (confirm(`Delete preset "${name}"?`)) deletePreset(name);
+      });
+
+      right.appendChild(applyBtn);
+      right.appendChild(delBtn);
+
+      item.appendChild(left);
+      item.appendChild(right);
+      presetsList.appendChild(item);
+    });
   }
 
   // initial:
@@ -157,5 +252,5 @@
   renderPresets();
 
   // expose a small debug API (safe)
-  window.EchoCanvas = {spawnEcho, echoes, audioCtx};
+  window.EchoCanvas = {spawnEcho, echoes, audioCtx, getPresets: () => ({...presets})};
 })();
